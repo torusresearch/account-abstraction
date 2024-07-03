@@ -500,4 +500,57 @@ describe('TokenPaymaster', function () {
     const expectedPrice = initialPriceToken / initialPriceEther
     assert.closeTo(deFactoExchangeRate, expectedPrice, 0.001)
   })
+
+  it.only('measure gas bundled vs unbundled', async () => {
+    const N = 10
+    const userOps = await Promise.all(new Array(N).fill(null).map(async (_, i) => {
+      let op = await fillUserOp({
+        sender: account.address,
+        paymaster: paymasterAddress,
+        paymasterVerificationGasLimit: 3e5,
+        paymasterPostOpGasLimit: 3e5,
+        nonce: i,
+        callData
+      }, entryPoint)
+      op = signUserOp(op, accountOwner, entryPoint.address, chainId)
+      const opPacked = packUserOp(op)
+      return opPacked
+    }))
+
+    // Submit individually.
+    {
+      const snapshot = await ethers.provider.send('evm_snapshot', [])
+      await token.transfer(account.address, parseEther('1'))
+      await token.sudoApprove(account.address, paymaster.address, ethers.constants.MaxUint256)
+
+      // Submit.
+      let gasTotal = BigNumber.from(0)
+      for (const opPacked of userOps) {
+        const tx = await entryPoint
+          .handleOps([opPacked], beneficiaryAddress)
+          .then(async tx => await tx.wait())
+        gasTotal = gasTotal.add(tx.gasUsed)
+      }
+
+      // Print tx.gasUsed
+      console.log('Gas used (unbundled):', gasTotal.toString())
+      await ethers.provider.send('evm_revert', [snapshot])
+    }
+
+    // Submit as bundle.
+    {
+      const snapshot = await ethers.provider.send('evm_snapshot', [])
+      await token.transfer(account.address, parseEther('1'))
+      await token.sudoApprove(account.address, paymaster.address, ethers.constants.MaxUint256)
+
+      // Submit.
+      const tx = await entryPoint
+        .handleOps(userOps, beneficiaryAddress)
+        .then(async tx => await tx.wait())
+
+      // Print tx.gasUsed
+      console.log('Gas used (bundled):', tx.gasUsed.toString())
+      await ethers.provider.send('evm_revert', [snapshot])
+    }
+  })
 })
